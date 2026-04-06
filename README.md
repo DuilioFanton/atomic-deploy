@@ -19,7 +19,7 @@ Built for production environments where predictability and safety matter.
 - Optional migrations
 - Automatic cleanup of old releases
 - Frontend support for `npm`, `yarn`, or `pnpm`
-- Optional SQLite bootstrap for first deploy (`database.sqlite` creation)
+- SQLite bootstrap with shared database persistence across releases
 
 ---
 
@@ -59,7 +59,7 @@ Global variables:
 - `DEPLOY_USER` (user for git clone and frontend build; default: current user)
 - `KEEP_RELEASES` (number of releases to keep)
 - `LOCK_FILE` (default: `/tmp/atomic_deploy.lock`)
-- `AUTO_GENERATE_APP_KEY` (`yes` or `no`, default: `no`)
+- `AUTO_GENERATE_APP_KEY` (`yes` or `no`, default: `no`; first deploy auto-generates when `.env` is bootstrapped)
 
 ---
 
@@ -110,7 +110,7 @@ This avoids hidden platform mismatches and dependency drift between projects.
 - PHP binary validation
 - Branch validation after clone
 - Automatic rollback on error
-- `APP_KEY` is fail-fast by default (not auto-generated unless enabled)
+- `APP_KEY` is auto-generated only on first deploy when `.env` is created from `.env.example` (otherwise fail-fast unless enabled)
 
 ---
 
@@ -119,16 +119,17 @@ This avoids hidden platform mismatches and dependency drift between projects.
 1. Acquire deploy lock
 2. Validate environment and tools
 3. Clone repository into a timestamped release
-4. Link shared files and directories (`.env`, `storage`, `bootstrap/cache`)
+4. Link shared directories (`storage`, `bootstrap/cache`) and prepare `.env` for build
 5. Pre-install Composer vendor packages for frontend builds (when needed)
 6. Install frontend dependencies/build (when applicable)
-7. Install Composer dependencies with the selected PHP binary
-8. Ensure app key and SQLite file (when needed)
-9. Run migrations (optional)
-10. Clear and warm Laravel caches
-11. Run health check command
-12. Switch `current` symlink atomically
-13. Restart queues and cleanup old releases
+7. Link shared `.env` into the release
+8. Install Composer dependencies with the selected PHP binary
+9. Ensure app key and SQLite file (shared when using relative sqlite paths)
+10. Run migrations (optional)
+11. Clear and warm Laravel caches
+12. Run health check command
+13. Switch `current` symlink atomically
+14. Restart queues and cleanup old releases
 
 ---
 

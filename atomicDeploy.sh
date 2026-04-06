@@ -25,6 +25,7 @@ DEPLOY_USER="${DEPLOY_USER:-$(id -un)}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 LOCK_FILE="${LOCK_FILE:-/tmp/atomic_deploy.lock}"
 AUTO_GENERATE_APP_KEY="${AUTO_GENERATE_APP_KEY:-no}"
+SHARED_ENV_BOOTSTRAPPED="no"
 
 # =========================================================
 # DEPLOY LOCK
@@ -174,6 +175,7 @@ ensure_base_commands() {
     require_command readlink
     require_command flock
     require_command grep
+    require_command awk
     require_command cp
     require_command sort
     require_command id
@@ -391,6 +393,8 @@ ensure_shared_env_from_example() {
     local shared_dir="$1"
     local release_dir="$2"
 
+    SHARED_ENV_BOOTSTRAPPED="no"
+
     if [ ! -f "$shared_dir/.env" ]; then
         log_message "Creating shared .env from .env.example"
 
@@ -398,6 +402,7 @@ ensure_shared_env_from_example() {
             run_as_root cp "$release_dir/.env.example" "$shared_dir/.env"
             run_as_root chown "$APP_USER:$WEB_GROUP" "$shared_dir/.env"
             run_as_root chmod 640 "$shared_dir/.env"
+            SHARED_ENV_BOOTSTRAPPED="yes"
 
             log_message "Created file: $shared_dir/.env"
             log_message "WARNING: review environment variables before production use"
@@ -407,17 +412,59 @@ ensure_shared_env_from_example() {
     fi
 }
 
+link_shared_env_file() {
+    local release_dir="$1"
+    local shared_dir="$2"
+
+    [ -f "$shared_dir/.env" ] || fail_with_error "Shared .env file not found"
+
+    if [ -e "$release_dir/.env" ] || [ -L "$release_dir/.env" ]; then
+        run_as_deploy_user rm -rf "$release_dir/.env"
+    fi
+
+    run_as_deploy_user ln -s "$shared_dir/.env" "$release_dir/.env"
+}
+
+prepare_release_env_for_frontend_build() {
+    local release_dir="$1"
+    local shared_dir="$2"
+    local frontend_cmd="$3"
+
+    [ -f "$shared_dir/.env" ] || fail_with_error "Shared .env file not found"
+
+    if [ "$frontend_cmd" = "none" ] || [ ! -f "$release_dir/package.json" ]; then
+        link_shared_env_file "$release_dir" "$shared_dir"
+        return 0
+    fi
+
+    log_message "Creating temporary .env for frontend build"
+
+    if [ -e "$release_dir/.env" ] || [ -L "$release_dir/.env" ]; then
+        run_as_deploy_user rm -rf "$release_dir/.env"
+    fi
+
+    run_as_root cp "$shared_dir/.env" "$release_dir/.env"
+    run_as_root chown "$DEPLOY_USER:$WEB_GROUP" "$release_dir/.env"
+    run_as_root chmod 640 "$release_dir/.env"
+}
+
 ensure_app_key() {
     local php_bin="$1"
     local release_dir="$2"
     local shared_dir="$3"
 
-    if grep -Eq '^APP_KEY=.+$' "$shared_dir/.env"; then
+    if run_as_app_user grep -Eq '^APP_KEY=.+$' "$shared_dir/.env"; then
         return 0
     fi
 
     if [ "$AUTO_GENERATE_APP_KEY" = "yes" ]; then
         log_message "APP_KEY is missing. Auto-generating it (AUTO_GENERATE_APP_KEY=yes)..."
+        run_artisan "$php_bin" "$release_dir" key:generate --force
+        return 0
+    fi
+
+    if [ "$SHARED_ENV_BOOTSTRAPPED" = "yes" ]; then
+        log_message "APP_KEY is missing in a newly created shared .env. Auto-generating for first deploy..."
         run_artisan "$php_bin" "$release_dir" key:generate --force
         return 0
     fi
@@ -428,38 +475,39 @@ ensure_app_key() {
 read_env_value() {
     local env_file="$1"
     local key="$2"
-    local line
-    local value
 
-    [ -f "$env_file" ] || return 1
-
-    while IFS= read -r line; do
-        case "$line" in
-            ''|'#'*)
-                continue
-                ;;
-            "$key"=*)
-                value="${line#*=}"
-                value="${value%\"}"
-                value="${value#\"}"
-                value="${value%\'}"
-                value="${value#\'}"
-                printf '%s' "$value"
-                return 0
-                ;;
-        esac
-    done < "$env_file"
-
-    return 1
+    run_as_app_user awk -F= -v k="$key" '
+        $0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/ {
+            next
+        }
+        index($0, k "=") == 1 {
+            value = substr($0, length(k) + 2)
+            sq = sprintf("%c", 39)
+            if ((substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"") || (substr(value, 1, 1) == sq && substr(value, length(value), 1) == sq)) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            print value
+            found = 1
+            exit 0
+        }
+        END {
+            if (!found) {
+                exit 1
+            }
+        }
+    ' "$env_file"
 }
 
 ensure_sqlite_database_if_needed() {
     local release_dir="$1"
+    local shared_dir="$2"
     local env_file="$release_dir/.env"
     local db_connection=""
     local db_database=""
     local db_path=""
     local db_dir=""
+    local shared_db_path=""
+    local shared_db_dir=""
 
     db_connection="$(read_env_value "$env_file" "DB_CONNECTION" || true)"
     [ "$db_connection" = "sqlite" ] || return 0
@@ -473,6 +521,24 @@ ensure_sqlite_database_if_needed() {
         db_path="$db_database"
     else
         db_path="$release_dir/$db_database"
+        shared_db_path="$shared_dir/$db_database"
+    fi
+
+    if [ -n "$shared_db_path" ]; then
+        shared_db_dir="$(dirname "$shared_db_path")"
+        run_as_app_user mkdir -p "$shared_db_dir"
+        if [ ! -f "$shared_db_path" ]; then
+            run_as_app_user touch "$shared_db_path"
+            log_message "Created shared SQLite database file for sqlite environment: $shared_db_path"
+        fi
+
+        db_dir="$(dirname "$db_path")"
+        run_as_app_user mkdir -p "$db_dir"
+        if [ -e "$db_path" ] || [ -L "$db_path" ]; then
+            run_as_app_user rm -f "$db_path"
+        fi
+        run_as_app_user ln -s "$shared_db_path" "$db_path"
+        return 0
     fi
 
     db_dir="$(dirname "$db_path")"
@@ -563,6 +629,7 @@ deploy_project() {
     current_branch="$(run_as_deploy_user git -C "$release_dir" rev-parse --abbrev-ref HEAD)"
     [ "$current_branch" = "$branch" ] || fail_with_error "Cloned wrong branch. Expected: $branch | Got: $current_branch"
 
+    SHARED_ENV_BOOTSTRAPPED="no"
     ensure_shared_env_from_example "$shared_dir" "$release_dir"
 
     log_message "Configuring shared links"
@@ -573,12 +640,7 @@ deploy_project() {
     run_as_deploy_user rm -rf "$release_dir/bootstrap/cache"
     run_as_deploy_user ln -s "$shared_dir/bootstrap/cache" "$release_dir/bootstrap/cache"
 
-    [ -f "$shared_dir/.env" ] || fail_with_error "Shared .env file not found"
-
-    if [ -e "$release_dir/.env" ] || [ -L "$release_dir/.env" ]; then
-        run_as_deploy_user rm -rf "$release_dir/.env"
-    fi
-    run_as_deploy_user ln -s "$shared_dir/.env" "$release_dir/.env"
+    prepare_release_env_for_frontend_build "$release_dir" "$shared_dir" "$frontend_cmd"
 
     log_message "Applying initial permissions"
     run_as_root chown -R "$APP_USER:$WEB_GROUP" "$shared_dir/storage" "$shared_dir/bootstrap/cache"
@@ -591,13 +653,16 @@ deploy_project() {
     log_message "Installing/building frontend when applicable"
     install_node_dependencies_and_build "$release_dir" "$frontend_cmd"
 
+    log_message "Linking shared .env into release"
+    link_shared_env_file "$release_dir" "$shared_dir"
+
     run_as_root chown -R "$APP_USER:$WEB_GROUP" "$release_dir"
 
     log_message "Installing PHP dependencies"
     run_composer_install "$php_bin" "$composer_mode" "$release_dir"
 
     ensure_app_key "$php_bin" "$release_dir" "$shared_dir"
-    ensure_sqlite_database_if_needed "$release_dir"
+    ensure_sqlite_database_if_needed "$release_dir" "$shared_dir"
 
     if [ "$run_migrations" = "yes" ]; then
         log_message "Running database migrations"

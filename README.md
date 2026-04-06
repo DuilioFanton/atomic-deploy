@@ -1,39 +1,37 @@
-# 🚀 Atomic Laravel Deploy Script (Multi-PHP, Zero Downtime)
+# Atomic Laravel Deploy Script (Multi-PHP, Zero Downtime)
 
-Deploy automatizado, seguro e **idempotente** para aplicações Laravel com suporte a **multi-versões de PHP**, **rollback automático** e **zero downtime**.
+Reliable, idempotent deploy automation for Laravel applications with per-project PHP versions, atomic releases, and rollback support.
 
-> Feito para ambientes reais. Sem gambiarra. Sem downtime. Sem dor de cabeça.
-
----
-
-## ✨ Features
-
-* ⚡ Deploy atômico com symlink (`current`)
-* 🔁 Rollback automático em caso de erro
-* 🧠 Suporte a múltiplas versões de PHP por projeto
-* 📦 Composer isolado por versão de PHP
-* 🧵 Lock de execução (evita deploy simultâneo)
-* 🗂 Estrutura padrão (`releases`, `shared`)
-* 🔐 Permissões ajustadas automaticamente
-* 🧪 Healthcheck pós-deploy
-* 🔄 Migrações automáticas (opcional)
-* 🧹 Limpeza de releases antigas
-* 🎯 Compatível com:
-
-  * npm / yarn / pnpm
-* 🔧 Sem dependência de `update-alternatives` (sem risco global)
+Built for production environments where predictability and safety matter.
 
 ---
 
-## 📁 Estrutura de Diretórios
+## Features
 
-```
+- Atomic deploy with a `current` symlink
+- Automatic rollback when a deploy step fails
+- Per-project PHP binary support
+- Composer executed with the configured PHP binary
+- Deploy lock via `flock` to prevent concurrent runs
+- Standard structure (`releases`, `shared`)
+- Automatic permission handling for runtime folders
+- Post-deploy Artisan health check
+- Optional migrations
+- Automatic cleanup of old releases
+- Frontend support for `npm`, `yarn`, or `pnpm`
+- Optional SQLite bootstrap for first deploy (`database.sqlite` creation)
+
+---
+
+## Directory Layout
+
+```text
 /var/www/
-  └── projeto/
-      ├── current -> releases/20260405_120240
+  └── project/
+      ├── current -> releases/20260406_003043
       ├── releases/
+      │    ├── 20260406_003043/
       │    ├── 20260405_120240/
-      │    ├── 20260404_101010/
       │    └── ...
       └── shared/
            ├── .env
@@ -43,42 +41,43 @@ Deploy automatizado, seguro e **idempotente** para aplicações Laravel com supo
 
 ---
 
-## ⚙️ Configuração
+## Configuration
 
-No topo do script:
+At the top of `atomicDeploy.sh`:
 
 ```bash
 declare -A PROJECTS
 
-PROJECTS["project"]="repo|branch|php_bin|frontend_cmd|composer_mode|run_migrate|healthcheck"
+PROJECTS["project_name"]="repo_url|branch|php_bin|frontend_cmd|composer_mode|run_migrations|artisan_healthcheck"
 PROJECTS["atomic_deploy_example_laravel_13"]="git@github.com:DuilioFanton/atomic-deploy-project-example-laravel-13.git|master|/usr/bin/php|build|prod|yes|about"
 ```
 
-E ajuste também as variáveis globais do script:
+Global variables:
 
-* `BASE_ROOT` (default `/var/www`)
-* `APP_USER` / `WEB_GROUP` para o usuário de runtime do Laravel
-* `DEPLOY_USER` para o usuário de clone/build (default: usuário atual)
-* `KEEP_RELEASES` e `LOCK_FILE`
-* `AUTO_GENERATE_APP_KEY` (`yes` ou `no`, default `no`)
-
----
-
-## 🧩 Parâmetros explicados
-
-| Campo         | Descrição                            |
-| ------------- | ------------------------------------ |
-| repo          | URL do repositório                   |
-| branch        | Branch de deploy                     |
-| php_bin       | Caminho absoluto do PHP              |
-| frontend_cmd  | Comando (ex: `build`, `dev`, `none`) |
-| composer_mode | `prod` ou `dev`                      |
-| run_migrate   | `yes` ou `no`                        |
-| healthcheck   | Comando artisan                      |
+- `BASE_ROOT` (default: `/var/www`)
+- `APP_USER` and `WEB_GROUP` (Laravel runtime user/group)
+- `DEPLOY_USER` (user for git clone and frontend build; default: current user)
+- `KEEP_RELEASES` (number of releases to keep)
+- `LOCK_FILE` (default: `/tmp/atomic_deploy.lock`)
+- `AUTO_GENERATE_APP_KEY` (`yes` or `no`, default: `no`)
 
 ---
 
-## 🚀 Como usar
+## PROJECTS Fields
+
+| Field | Description |
+| --- | --- |
+| `repo_url` | Git repository URL |
+| `branch` | Branch to deploy |
+| `php_bin` | Absolute path to PHP binary |
+| `frontend_cmd` | Frontend script (example: `build`, `dev`, `none`) |
+| `composer_mode` | `prod` or `dev` |
+| `run_migrations` | `yes` or `no` |
+| `artisan_healthcheck` | Artisan command used as health check |
+
+---
+
+## Usage
 
 ```bash
 chmod +x atomicDeploy.sh
@@ -87,102 +86,64 @@ chmod +x atomicDeploy.sh
 
 ---
 
-## 🔥 Filosofia do Script
+## Why Per-Project PHP Matters
 
-### ❌ NÃO usamos:
+The script never relies on mutable global PHP state.
 
-* `update-alternatives`
-* PHP global mutável
-* hacks com PATH
-* downtime
-
-### ✅ USAMOS:
-
-* PHP explícito por projeto:
+It always executes with the configured binary:
 
 ```bash
 "$php_bin" artisan ...
-"$php_bin" composer ...
+"$php_bin" "$(command -v composer)" install ...
 ```
 
-👉 Cada projeto roda com sua própria versão de PHP — sem conflito.
+This avoids hidden platform mismatches and dependency drift between projects.
 
 ---
 
-## 🧠 Por que isso importa?
+## Security and Safety
 
-Em ambientes reais:
-
-* Projeto A → PHP 7.4
-* Projeto B → PHP 8.2
-* Projeto C → PHP 8.5
-
-Se você usar PHP global:
-💥 quebra tudo
-
-Esse script resolve isso **de forma limpa e previsível**.
+- `set -Eeuo pipefail`
+- Lock file with `flock`
+- Required command validation
+- Strict per-project config validation
+- PHP binary validation
+- Branch validation after clone
+- Automatic rollback on error
+- `APP_KEY` is fail-fast by default (not auto-generated unless enabled)
 
 ---
 
-## 📦 Composer (IMPORTANTE)
+## Deploy Flow
 
-O script força o Composer a rodar com o PHP correto:
-
-```bash
-"$php_bin" "$(command -v composer)" install
-```
-
-👉 Isso evita:
-
-* erro de platform
-* dependências incompatíveis
-* bugs invisíveis em produção
-
----
-
-## 🔐 Segurança
-
-* `set -Eeuo pipefail`
-* lock com `flock`
-* validação de comandos
-* validação de binário PHP
-* validação de branch
-* validação estrita de configuração por projeto
-* `APP_KEY` não é gerada automaticamente por padrão (fail fast)
-* rollback automático
+1. Acquire deploy lock
+2. Validate environment and tools
+3. Clone repository into a timestamped release
+4. Link shared files and directories (`.env`, `storage`, `bootstrap/cache`)
+5. Install frontend dependencies/build (when applicable)
+6. Install Composer dependencies with the selected PHP binary
+7. Ensure app key and SQLite file (when needed)
+8. Run migrations (optional)
+9. Clear and warm Laravel caches
+10. Run health check command
+11. Switch `current` symlink atomically
+12. Restart queues and cleanup old releases
 
 ---
 
-## 🔄 Deploy Flow
+## Rollback Behavior
 
-1. Lock de execução
-2. Validação de ambiente
-3. Clone do repo
-4. Link de arquivos compartilhados
-5. Composer install (PHP correto)
-6. Build frontend (se existir)
-7. Cache clear + rebuild
-8. Migrate (opcional)
-9. Health check
-10. Switch de symlink (`current`)
-11. Restart queue
-12. Cleanup releases antigas
+If any deploy step fails:
+
+- The failed release is removed
+- `current` is restored to the previous release (when applicable)
+- Existing production traffic remains on the previous healthy release
 
 ---
 
-## 💥 Rollback automático
+## Health Check
 
-Se qualquer etapa falhar:
-
-* release é descartada
-* versão anterior continua ativa
-* zero impacto para usuários
-
----
-
-## 🧪 Healthcheck
-
-Configuração:
+Examples:
 
 ```bash
 about
@@ -190,107 +151,51 @@ route:list
 config:cache
 ```
 
-Executado automaticamente:
+Executed as:
 
 ```bash
-php artisan <healthcheck>
+php artisan <artisan_healthcheck>
 ```
 
-Se falhar → deploy abortado
+If this fails, deploy is aborted and rollback is triggered.
 
 ---
 
-## 🧵 Lock de Deploy
+## Requirements
 
-Evita deploy simultâneo:
-
-```bash
-/tmp/atomic_deploy.lock
-```
-
----
-
-## 🧹 Cleanup automático
-
-Mantém apenas:
-
-```bash
-KEEP_RELEASES=5
-```
+- Linux host with Bash
+- Git
+- Composer
+- PHP (multiple versions supported)
+- Node.js (optional)
+- One of: `npm`, `yarn`, `pnpm` (for frontend projects)
+- `sudo` and/or `runuser` when privilege/user switching is needed
 
 ---
 
-## ⚠️ Requisitos
+## Best Practices
 
-* PHP (múltiplas versões suportadas)
-* Composer
-* Git
-* Node (opcional)
-* Yarn / pnpm / npm
-* Permissões sudo (para setup inicial)
-
----
-
-## 💡 Boas práticas
-
-* Use SSH keys para Git
-* Configure `.env` corretamente no `shared`
-* Nunca versionar `.env`
-* Use filas com supervisor
-* Use opcache em produção
+- Use SSH keys for Git access
+- Keep `.env` in `shared/.env` and never commit it
+- Use process supervision for queues
+- Enable OPcache in production
+- Run deploy first in staging before production
 
 ---
 
-## 🧠 Dicas avançadas
+## Contributing
 
-### Multi-servidor
+Pull requests are welcome.
 
-Combine com:
+Potential enhancements:
 
-* rsync
-* load balancer
-* deploy rolling
-
----
-
-### Zero downtime real
-
-Se quiser elevar nível:
-
-* usar queue worker draining
-* healthcheck HTTP
-* deploy blue/green
+- Docker-aware workflow
+- Native CI/CD integration
+- Slack/Discord notifications
+- HTTP health checks
 
 ---
 
-## ❤️ Filosofia
-
-> Deploy não é sobre rodar comando.
-> É sobre garantir consistência, previsibilidade e segurança.
-
-Esse script foi feito com isso em mente.
-
----
-
-## 🤝 Contribuindo
-
-PRs são bem-vindos.
-
-Ideias:
-
-* suporte a Docker
-* integração com CI/CD
-* notificação Slack/Discord
-* healthcheck HTTP
-
----
-
-## 📜 Licença
+## License
 
 MIT
-
----
-
-## 🧠 Autor
-
-Feito por quem já sofreu com deploy quebrando produção 😄

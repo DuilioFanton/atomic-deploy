@@ -2,15 +2,15 @@
 set -Eeuo pipefail
 
 # =========================================================
-# CONFIGURACAO
+# CONFIGURATION
 # =========================================================
-# FORMATO:
-# PROJECTS["nome"]="repo|branch|php_bin|frontend_cmd|composer_mode|run_migrate|healthcheck_artisan"
+# FORMAT:
+# PROJECTS["name"]="repo_url|branch|php_bin|frontend_cmd|composer_mode|run_migrations|artisan_healthcheck"
 #
 # composer_mode: prod | dev
-# run_migrate: yes | no
+# run_migrations: yes | no
 # frontend_cmd: build | dev | none
-# healthcheck_artisan: ex: "about" ou "route:list"
+# artisan_healthcheck: e.g. "about" or "route:list"
 
 declare -A PROJECTS
 PROJECTS["atomic_deploy_example_laravel_13"]="git@github.com:DuilioFanton/atomic-deploy-project-example-laravel-13.git|master|/usr/bin/php|build|prod|yes|about"
@@ -20,35 +20,35 @@ PROJECTS["atomic_deploy_example_laravel_13"]="git@github.com:DuilioFanton/atomic
 BASE_ROOT="${BASE_ROOT:-/var/www}"
 APP_USER="${APP_USER:-www-data}"
 WEB_GROUP="${WEB_GROUP:-www-data}"
-# Usuario utilizado para git clone e build frontend (por padrao: usuario que executa o script)
+# User used for git clone and frontend build steps (defaults to current user)
 DEPLOY_USER="${DEPLOY_USER:-$(id -un)}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 LOCK_FILE="${LOCK_FILE:-/tmp/atomic_deploy.lock}"
 AUTO_GENERATE_APP_KEY="${AUTO_GENERATE_APP_KEY:-no}"
 
 # =========================================================
-# LOCK DE EXECUCAO
+# DEPLOY LOCK
 # =========================================================
 exec 200>"$LOCK_FILE"
 flock -n 200 || {
-    echo "Outro deploy ja esta em execucao."
+    echo "Another deploy is already running."
     exit 1
 }
 
 # =========================================================
-# FUNCOES AUXILIARES
+# HELPER FUNCTIONS
 # =========================================================
-log() {
+log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
-fail() {
-    log "ERRO: $1"
+fail_with_error() {
+    log_message "ERROR: $1"
     return 1
 }
 
 require_command() {
-    command -v "$1" >/dev/null 2>&1 || fail "Comando obrigatorio nao encontrado: $1"
+    command -v "$1" >/dev/null 2>&1 || fail_with_error "Required command not found: $1"
 }
 
 run_as_root() {
@@ -71,7 +71,7 @@ run_as_user() {
         elif command -v sudo >/dev/null 2>&1; then
             sudo -u "$target_user" "$@"
         else
-            fail "Nao foi possivel trocar para o usuario '$target_user' sem runuser/sudo"
+            fail_with_error "Cannot switch to user '$target_user' without runuser/sudo"
         fi
     else
         sudo -u "$target_user" "$@"
@@ -94,48 +94,49 @@ run_artisan() {
     run_as_app_user "$php_bin" "$release_dir/artisan" "$@"
 }
 
-validate_php_bin() {
+validate_php_binary() {
     local php_bin="$1"
-    [ -x "$php_bin" ] || fail "Binario PHP invalido ou inexistente: $php_bin"
+
+    [ -x "$php_bin" ] || fail_with_error "Invalid or missing PHP binary: $php_bin"
 }
 
-validate_project_name() {
-    local project_name="$1"
+validate_project_key() {
+    local project_key="$1"
 
-    [[ "$project_name" =~ ^[a-zA-Z0-9._-]+$ ]] || fail "Nome de projeto invalido: $project_name"
+    [[ "$project_key" =~ ^[a-zA-Z0-9._-]+$ ]] || fail_with_error "Invalid project key: $project_key"
 }
 
 validate_project_config() {
-    local project_name="$1"
+    local project_key="$1"
     local config="$2"
     local -a parts=()
 
     IFS="|" read -r -a parts <<< "$config"
 
-    [ "${#parts[@]}" -eq 7 ] || fail "Config invalida para '$project_name'. Esperado: repo|branch|php_bin|frontend_cmd|composer_mode|run_migrate|healthcheck_artisan"
+    [ "${#parts[@]}" -eq 7 ] || fail_with_error "Invalid config for '$project_key'. Expected: repo_url|branch|php_bin|frontend_cmd|composer_mode|run_migrations|artisan_healthcheck"
 
     local repo_url="${parts[0]}"
     local branch="${parts[1]}"
     local php_bin="${parts[2]}"
     local frontend_cmd="${parts[3]}"
     local composer_mode="${parts[4]}"
-    local run_migrate="${parts[5]}"
-    local healthcheck_artisan="${parts[6]}"
+    local run_migrations="${parts[5]}"
+    local artisan_healthcheck="${parts[6]}"
 
-    [ -n "$repo_url" ] || fail "repo_url vazio para '$project_name'"
-    [ -n "$branch" ] || fail "branch vazia para '$project_name'"
-    [ -n "$php_bin" ] || fail "php_bin vazio para '$project_name'"
-    [[ "$php_bin" = /* ]] || fail "php_bin deve ser caminho absoluto para '$project_name'"
+    [ -n "$repo_url" ] || fail_with_error "repo_url is empty for '$project_key'"
+    [ -n "$branch" ] || fail_with_error "branch is empty for '$project_key'"
+    [ -n "$php_bin" ] || fail_with_error "php_bin is empty for '$project_key'"
+    [[ "$php_bin" = /* ]] || fail_with_error "php_bin must be an absolute path for '$project_key'"
 
     case "$frontend_cmd" in
         none|build|dev)
             ;;
         "")
-            fail "frontend_cmd vazio para '$project_name'"
+            fail_with_error "frontend_cmd is empty for '$project_key'"
             ;;
         *)
             if [[ "$frontend_cmd" =~ [[:space:]] ]]; then
-                fail "frontend_cmd nao deve conter espacos para '$project_name'"
+                fail_with_error "frontend_cmd must not contain spaces for '$project_key'"
             fi
             ;;
     esac
@@ -144,21 +145,21 @@ validate_project_config() {
         prod|dev)
             ;;
         *)
-            fail "composer_mode invalido para '$project_name': $composer_mode (use prod ou dev)"
+            fail_with_error "Invalid composer_mode for '$project_key': $composer_mode (use prod or dev)"
             ;;
     esac
 
-    case "$run_migrate" in
+    case "$run_migrations" in
         yes|no)
             ;;
         *)
-            fail "run_migrate invalido para '$project_name': $run_migrate (use yes ou no)"
+            fail_with_error "Invalid run_migrations for '$project_key': $run_migrations (use yes or no)"
             ;;
     esac
 
-    [ -n "$healthcheck_artisan" ] || fail "healthcheck_artisan vazio para '$project_name'"
-    if [[ "$healthcheck_artisan" =~ [[:space:]] ]]; then
-        fail "healthcheck_artisan nao deve conter espacos para '$project_name'"
+    [ -n "$artisan_healthcheck" ] || fail_with_error "artisan_healthcheck is empty for '$project_key'"
+    if [[ "$artisan_healthcheck" =~ [[:space:]] ]]; then
+        fail_with_error "artisan_healthcheck must not contain spaces for '$project_key'"
     fi
 }
 
@@ -186,32 +187,32 @@ ensure_base_commands() {
 
     if [ "$EUID" -eq 0 ] && { [ "$(id -un)" != "$APP_USER" ] || [ "$(id -un)" != "$DEPLOY_USER" ]; }; then
         if ! command -v runuser >/dev/null 2>&1 && ! command -v sudo >/dev/null 2>&1; then
-            fail "Execute como $APP_USER/$DEPLOY_USER ou instale runuser/sudo"
+            fail_with_error "Run as $APP_USER/$DEPLOY_USER or install runuser/sudo"
         fi
     fi
 
-    id -u "$APP_USER" >/dev/null 2>&1 || fail "Usuario APP_USER nao encontrado: $APP_USER"
-    id -u "$DEPLOY_USER" >/dev/null 2>&1 || fail "Usuario DEPLOY_USER nao encontrado: $DEPLOY_USER"
-    getent group "$WEB_GROUP" >/dev/null 2>&1 || fail "Grupo WEB_GROUP nao encontrado: $WEB_GROUP"
+    id -u "$APP_USER" >/dev/null 2>&1 || fail_with_error "APP_USER does not exist: $APP_USER"
+    id -u "$DEPLOY_USER" >/dev/null 2>&1 || fail_with_error "DEPLOY_USER does not exist: $DEPLOY_USER"
+    getent group "$WEB_GROUP" >/dev/null 2>&1 || fail_with_error "WEB_GROUP does not exist: $WEB_GROUP"
 
-    [[ "$KEEP_RELEASES" =~ ^[1-9][0-9]*$ ]] || fail "KEEP_RELEASES deve ser inteiro positivo"
+    [[ "$KEEP_RELEASES" =~ ^[1-9][0-9]*$ ]] || fail_with_error "KEEP_RELEASES must be a positive integer"
 
     case "$AUTO_GENERATE_APP_KEY" in
         yes|no)
             ;;
         *)
-            fail "AUTO_GENERATE_APP_KEY invalido: $AUTO_GENERATE_APP_KEY (use yes ou no)"
+            fail_with_error "Invalid AUTO_GENERATE_APP_KEY: $AUTO_GENERATE_APP_KEY (use yes or no)"
             ;;
     esac
 }
 
 ensure_project_structure() {
-    local project_name="$1"
-    local base_dir="$BASE_ROOT/$project_name"
-    local releases_dir="$base_dir/releases"
-    local shared_dir="$base_dir/shared"
+    local project_key="$1"
+    local project_root="$BASE_ROOT/$project_key"
+    local releases_dir="$project_root/releases"
+    local shared_dir="$project_root/shared"
 
-    log "Garantindo estrutura base do projeto: $project_name"
+    log_message "Ensuring base project structure: $project_key"
 
     run_as_root mkdir -p "$releases_dir"
     run_as_root mkdir -p "$shared_dir/storage"
@@ -223,9 +224,9 @@ ensure_project_structure() {
     run_as_root mkdir -p "$shared_dir/storage/framework/views"
     run_as_root mkdir -p "$shared_dir/storage/logs"
 
-    run_as_root chown "$APP_USER:$WEB_GROUP" "$base_dir" "$shared_dir"
+    run_as_root chown "$APP_USER:$WEB_GROUP" "$project_root" "$shared_dir"
     run_as_root chown "$DEPLOY_USER:$WEB_GROUP" "$releases_dir"
-    run_as_root chmod 2775 "$base_dir" "$releases_dir" "$shared_dir"
+    run_as_root chmod 2775 "$project_root" "$releases_dir" "$shared_dir"
 
     run_as_root chown -R "$APP_USER:$WEB_GROUP" "$shared_dir/storage" "$shared_dir/bootstrap/cache"
     run_as_root chmod -R 775 "$shared_dir/storage" "$shared_dir/bootstrap/cache"
@@ -233,15 +234,15 @@ ensure_project_structure() {
 
 cleanup_old_releases() {
     local releases_dir="$1"
-    local current_link="$2"
+    local current_symlink="$2"
     local current_target=""
     local release_path
     local -a releases=()
     local -a sorted_releases=()
     local index
 
-    if [ -L "$current_link" ] || [ -e "$current_link" ]; then
-        current_target="$(readlink -f "$current_link" || true)"
+    if [ -L "$current_symlink" ] || [ -e "$current_symlink" ]; then
+        current_target="$(readlink -f "$current_symlink" || true)"
     fi
 
     shopt -s nullglob
@@ -263,28 +264,28 @@ cleanup_old_releases() {
     done
 }
 
-check_repo_access() {
+check_repository_access() {
     local repo_url="$1"
 
-    run_as_deploy_user git ls-remote "$repo_url" >/dev/null 2>&1 || fail "Nao foi possivel acessar o repositorio: $repo_url"
+    run_as_deploy_user git ls-remote "$repo_url" >/dev/null 2>&1 || fail_with_error "Cannot access repository: $repo_url"
 }
 
-detect_node_manager_and_install() {
+install_node_dependencies_and_build() {
     local release_dir="$1"
     local frontend_cmd="$2"
 
     if [ ! -f "$release_dir/package.json" ]; then
-        log "Projeto sem package.json, pulando etapa Node"
+        log_message "No package.json found, skipping Node step"
         return 0
     fi
 
     if [ -f "$release_dir/yarn.lock" ]; then
         require_command yarn
-        log "Instalando dependencias Node com Yarn"
+        log_message "Installing Node dependencies with Yarn"
         run_as_deploy_user yarn --cwd "$release_dir" install --frozen-lockfile
 
         if [ "$frontend_cmd" != "none" ]; then
-            log "Executando build front: yarn run $frontend_cmd"
+            log_message "Running frontend build: yarn run $frontend_cmd"
             run_as_deploy_user yarn --cwd "$release_dir" run "$frontend_cmd"
         fi
         return 0
@@ -292,11 +293,11 @@ detect_node_manager_and_install() {
 
     if [ -f "$release_dir/pnpm-lock.yaml" ]; then
         require_command pnpm
-        log "Instalando dependencias Node com pnpm"
+        log_message "Installing Node dependencies with pnpm"
         run_as_deploy_user pnpm --dir "$release_dir" install --frozen-lockfile
 
         if [ "$frontend_cmd" != "none" ]; then
-            log "Executando build front: pnpm run $frontend_cmd"
+            log_message "Running frontend build: pnpm run $frontend_cmd"
             run_as_deploy_user pnpm --dir "$release_dir" run "$frontend_cmd"
         fi
         return 0
@@ -304,17 +305,17 @@ detect_node_manager_and_install() {
 
     if [ -f "$release_dir/package-lock.json" ]; then
         require_command npm
-        log "Instalando dependencias Node com npm"
+        log_message "Installing Node dependencies with npm"
         run_as_deploy_user npm --prefix "$release_dir" ci
 
         if [ "$frontend_cmd" != "none" ]; then
-            log "Executando build front: npm run $frontend_cmd"
+            log_message "Running frontend build: npm run $frontend_cmd"
             run_as_deploy_user npm --prefix "$release_dir" run "$frontend_cmd"
         fi
         return 0
     fi
 
-    fail "package.json encontrado, mas nenhum lockfile foi encontrado. Abortando por seguranca."
+    fail_with_error "package.json found, but no lockfile found. Aborting for safety."
 }
 
 run_composer_install() {
@@ -323,7 +324,7 @@ run_composer_install() {
     local release_dir="$3"
     local composer_bin
 
-    composer_bin="$(command -v composer)" || fail "Composer nao encontrado"
+    composer_bin="$(command -v composer)" || fail_with_error "Composer not found"
 
     if [ "$composer_mode" = "prod" ]; then
         run_as_app_user "$php_bin" "$composer_bin" install \
@@ -342,13 +343,13 @@ run_composer_install() {
     fi
 }
 
-health_check_release() {
+run_release_health_check() {
     local php_bin="$1"
     local release_dir="$2"
     local artisan_cmd="$3"
 
-    log "Executando health check basico: php artisan $artisan_cmd"
-    run_artisan "$php_bin" "$release_dir" "$artisan_cmd" >/dev/null 2>&1 || fail "Health check falhou na release"
+    log_message "Running release health check: php artisan $artisan_cmd"
+    run_artisan "$php_bin" "$release_dir" "$artisan_cmd" >/dev/null 2>&1 || fail_with_error "Health check failed for release"
 }
 
 ensure_shared_env_from_example() {
@@ -356,17 +357,17 @@ ensure_shared_env_from_example() {
     local release_dir="$2"
 
     if [ ! -f "$shared_dir/.env" ]; then
-        log "Criando .env compartilhado a partir do .env.example"
+        log_message "Creating shared .env from .env.example"
 
         if [ -f "$release_dir/.env.example" ]; then
             run_as_root cp "$release_dir/.env.example" "$shared_dir/.env"
             run_as_root chown "$APP_USER:$WEB_GROUP" "$shared_dir/.env"
             run_as_root chmod 640 "$shared_dir/.env"
 
-            log "Arquivo criado: $shared_dir/.env"
-            log "ATENCAO: revise as variaveis de ambiente antes de usar em producao"
+            log_message "Created file: $shared_dir/.env"
+            log_message "WARNING: review environment variables before production use"
         else
-            fail ".env.example nao encontrado no repositorio"
+            fail_with_error ".env.example not found in repository"
         fi
     fi
 }
@@ -381,12 +382,12 @@ ensure_app_key() {
     fi
 
     if [ "$AUTO_GENERATE_APP_KEY" = "yes" ]; then
-        log "APP_KEY ausente. Gerando automaticamente (AUTO_GENERATE_APP_KEY=yes)..."
+        log_message "APP_KEY is missing. Auto-generating it (AUTO_GENERATE_APP_KEY=yes)..."
         run_artisan "$php_bin" "$release_dir" key:generate --force
         return 0
     fi
 
-    fail "APP_KEY ausente em $shared_dir/.env. Defina manualmente ou use AUTO_GENERATE_APP_KEY=yes"
+    fail_with_error "APP_KEY missing in $shared_dir/.env. Set it manually or use AUTO_GENERATE_APP_KEY=yes"
 }
 
 read_env_value() {
@@ -443,50 +444,50 @@ ensure_sqlite_database_if_needed() {
     run_as_app_user mkdir -p "$db_dir"
     if [ ! -f "$db_path" ]; then
         run_as_app_user touch "$db_path"
-        log "Arquivo SQLite criado para ambiente sqlite: $db_path"
+        log_message "Created SQLite database file for sqlite environment: $db_path"
     fi
 }
 
 deploy_project() {
-    local project_name="$1"
+    local project_key="$1"
     local config="$2"
     local repo_url
     local branch
     local php_bin
     local frontend_cmd
     local composer_mode
-    local run_migrate
-    local healthcheck_artisan
+    local run_migrations
+    local artisan_healthcheck
 
-    validate_project_name "$project_name"
-    validate_project_config "$project_name" "$config"
+    validate_project_key "$project_key"
+    validate_project_config "$project_key" "$config"
 
-    IFS="|" read -r repo_url branch php_bin frontend_cmd composer_mode run_migrate healthcheck_artisan <<< "$config"
+    IFS="|" read -r repo_url branch php_bin frontend_cmd composer_mode run_migrations artisan_healthcheck <<< "$config"
 
-    local base_dir="$BASE_ROOT/$project_name"
-    local releases_dir="$base_dir/releases"
-    local shared_dir="$base_dir/shared"
-    local current_link="$base_dir/current"
+    local project_root="$BASE_ROOT/$project_key"
+    local releases_dir="$project_root/releases"
+    local shared_dir="$project_root/shared"
+    local current_symlink="$project_root/current"
     local timestamp
     timestamp="$(date '+%Y%m%d_%H%M%S')"
     local release_dir="$releases_dir/$timestamp"
-    local previous_current=""
+    local previous_release=""
     local current_switched="no"
 
-    log "========================================================="
-    log "Iniciando deploy do projeto: $project_name"
-    log "Repositorio: $repo_url"
-    log "Branch: $branch"
-    log "Nova release: $release_dir"
+    log_message "========================================================="
+    log_message "Starting deploy for project: $project_key"
+    log_message "Repository: $repo_url"
+    log_message "Branch: $branch"
+    log_message "New release: $release_dir"
 
-    validate_php_bin "$php_bin"
-    check_repo_access "$repo_url"
-    ensure_project_structure "$project_name"
+    validate_php_binary "$php_bin"
+    check_repository_access "$repo_url"
+    ensure_project_structure "$project_key"
 
-    if [ -L "$current_link" ] || [ -e "$current_link" ]; then
-        previous_current="$(readlink -f "$current_link" || true)"
-        if [ -n "$previous_current" ]; then
-            log "Release atual: $previous_current"
+    if [ -L "$current_symlink" ] || [ -e "$current_symlink" ]; then
+        previous_release="$(readlink -f "$current_symlink" || true)"
+        if [ -n "$previous_release" ]; then
+            log_message "Current release: $previous_release"
         fi
     fi
 
@@ -494,42 +495,42 @@ deploy_project() {
         local rollback_error=0
 
         trap - ERR
-        log "Falha detectada no deploy de $project_name"
+        log_message "Failure detected during deploy of $project_key"
 
         if [ "$current_switched" = "yes" ]; then
-            if [ -n "$previous_current" ] && [ -d "$previous_current" ]; then
-                run_as_root ln -sfn "$previous_current" "$current_link" || rollback_error=1
-                log "Symlink current restaurado para: $previous_current"
+            if [ -n "$previous_release" ] && [ -d "$previous_release" ]; then
+                run_as_root ln -sfn "$previous_release" "$current_symlink" || rollback_error=1
+                log_message "Restored current symlink to: $previous_release"
             else
-                run_as_root rm -f "$current_link" || rollback_error=1
-                log "Symlink current removido (nao havia release anterior)"
+                run_as_root rm -f "$current_symlink" || rollback_error=1
+                log_message "Removed current symlink (no previous release found)"
             fi
         fi
 
         if [ -d "$release_dir" ]; then
             run_as_root rm -rf "$release_dir" || rollback_error=1
-            log "Release com falha removida: $release_dir"
+            log_message "Removed failed release: $release_dir"
         fi
 
         if [ "$rollback_error" -ne 0 ]; then
-            log "ATENCAO: rollback parcial. Verifique manualmente: $current_link"
+            log_message "WARNING: rollback completed with errors. Check manually: $current_symlink"
         else
-            log "Rollback concluido com sucesso"
+            log_message "Rollback completed successfully"
         fi
     }
 
     trap rollback_on_error ERR
 
-    log "Clonando repositorio"
+    log_message "Cloning repository"
     run_as_deploy_user git clone --branch "$branch" --single-branch --depth 1 "$repo_url" "$release_dir"
 
     local current_branch
     current_branch="$(run_as_deploy_user git -C "$release_dir" rev-parse --abbrev-ref HEAD)"
-    [ "$current_branch" = "$branch" ] || fail "Branch clonada invalida. Esperada: $branch | Atual: $current_branch"
+    [ "$current_branch" = "$branch" ] || fail_with_error "Cloned wrong branch. Expected: $branch | Got: $current_branch"
 
     ensure_shared_env_from_example "$shared_dir" "$release_dir"
 
-    log "Configurando links compartilhados"
+    log_message "Configuring shared links"
     run_as_deploy_user rm -rf "$release_dir/storage"
     run_as_deploy_user ln -s "$shared_dir/storage" "$release_dir/storage"
 
@@ -537,80 +538,80 @@ deploy_project() {
     run_as_deploy_user rm -rf "$release_dir/bootstrap/cache"
     run_as_deploy_user ln -s "$shared_dir/bootstrap/cache" "$release_dir/bootstrap/cache"
 
-    [ -f "$shared_dir/.env" ] || fail "Arquivo .env compartilhado nao encontrado"
+    [ -f "$shared_dir/.env" ] || fail_with_error "Shared .env file not found"
 
     if [ -e "$release_dir/.env" ] || [ -L "$release_dir/.env" ]; then
         run_as_deploy_user rm -rf "$release_dir/.env"
     fi
     run_as_deploy_user ln -s "$shared_dir/.env" "$release_dir/.env"
 
-    log "Ajustando permissoes iniciais"
+    log_message "Applying initial permissions"
     run_as_root chown -R "$APP_USER:$WEB_GROUP" "$shared_dir/storage" "$shared_dir/bootstrap/cache"
     run_as_root chown "$APP_USER:$WEB_GROUP" "$shared_dir/.env"
     run_as_root chmod -R 775 "$shared_dir/storage" "$shared_dir/bootstrap/cache"
     run_as_root chmod 640 "$shared_dir/.env"
 
-    log "Instalando/buildando frontend, se aplicavel"
-    detect_node_manager_and_install "$release_dir" "$frontend_cmd"
+    log_message "Installing/building frontend when applicable"
+    install_node_dependencies_and_build "$release_dir" "$frontend_cmd"
 
     run_as_root chown -R "$APP_USER:$WEB_GROUP" "$release_dir"
 
-    log "Instalando dependencias PHP"
+    log_message "Installing PHP dependencies"
     run_composer_install "$php_bin" "$composer_mode" "$release_dir"
 
     ensure_app_key "$php_bin" "$release_dir" "$shared_dir"
     ensure_sqlite_database_if_needed "$release_dir"
 
-    if [ "$run_migrate" = "yes" ]; then
-        log "Executando migrations"
+    if [ "$run_migrations" = "yes" ]; then
+        log_message "Running database migrations"
         run_artisan "$php_bin" "$release_dir" migrate --force
     else
-        log "Migrations desabilitadas para este projeto"
+        log_message "Database migrations are disabled for this project"
     fi
 
-    log "Limpando caches do Laravel"
+    log_message "Clearing Laravel caches"
     run_artisan "$php_bin" "$release_dir" optimize:clear
 
-    log "Gerando caches do Laravel"
+    log_message "Warming Laravel caches"
     run_artisan "$php_bin" "$release_dir" config:cache
     run_artisan "$php_bin" "$release_dir" route:cache || true
     run_artisan "$php_bin" "$release_dir" view:cache || true
     run_artisan "$php_bin" "$release_dir" event:cache || true
     run_artisan "$php_bin" "$release_dir" storage:link || true
 
-    health_check_release "$php_bin" "$release_dir" "$healthcheck_artisan"
+    run_release_health_check "$php_bin" "$release_dir" "$artisan_healthcheck"
 
-    log "Trocando symlink current"
-    run_as_root ln -sfn "$release_dir" "$current_link"
+    log_message "Switching current symlink"
+    run_as_root ln -sfn "$release_dir" "$current_symlink"
     current_switched="yes"
 
-    log "Reiniciando filas"
+    log_message "Restarting queues"
     run_artisan "$php_bin" "$release_dir" queue:restart || true
 
-    log "Ajustando permissoes finais"
+    log_message "Applying final permissions"
     run_as_root chown -R "$APP_USER:$WEB_GROUP" "$shared_dir/storage" "$shared_dir/bootstrap/cache"
     run_as_root chmod -R 775 "$shared_dir/storage" "$shared_dir/bootstrap/cache"
 
-    log "Limpando releases antigas"
-    cleanup_old_releases "$releases_dir" "$current_link"
+    log_message "Cleaning old releases"
+    cleanup_old_releases "$releases_dir" "$current_symlink"
 
     trap - ERR
 
-    log "Deploy concluido com sucesso para $project_name"
-    log "Current -> $(readlink -f "$current_link")"
+    log_message "Deploy completed successfully for $project_key"
+    log_message "Current -> $(readlink -f "$current_symlink")"
 }
 
 # =========================================================
-# EXECUCAO
+# EXECUTION
 # =========================================================
 ensure_base_commands
 
-[ "${#PROJECTS[@]}" -gt 0 ] || fail "Nenhum projeto configurado no array PROJECTS"
+[ "${#PROJECTS[@]}" -gt 0 ] || fail_with_error "No projects configured in the PROJECTS array"
 
-log "Iniciando processo de deploy"
+log_message "Starting deploy process"
 
-for project_name in "${!PROJECTS[@]}"; do
-    deploy_project "$project_name" "${PROJECTS[$project_name]}"
+for project_key in "${!PROJECTS[@]}"; do
+    deploy_project "$project_key" "${PROJECTS[$project_key]}"
 done
 
-log "Deploy finalizado com sucesso"
+log_message "Deploy process completed successfully"

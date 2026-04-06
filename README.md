@@ -51,7 +51,16 @@ No topo do script:
 declare -A PROJECTS
 
 PROJECTS["project"]="repo|branch|php_bin|frontend_cmd|composer_mode|run_migrate|healthcheck"
+PROJECTS["atomic_deploy_example_laravel_13"]="git@github.com:DuilioFanton/atomic-deploy-project-example-laravel-13.git|master|/usr/bin/php|build|prod|yes|about"
 ```
+
+E ajuste também as variáveis globais do script:
+
+* `BASE_ROOT` (default `/var/www`)
+* `APP_USER` / `WEB_GROUP` para o usuário de runtime do Laravel
+* `DEPLOY_USER` para o usuário de clone/build (default: usuário atual)
+* `KEEP_RELEASES` e `LOCK_FILE`
+* `AUTO_GENERATE_APP_KEY` (`yes` ou `no`, default `no`)
 
 ---
 
@@ -72,8 +81,8 @@ PROJECTS["project"]="repo|branch|php_bin|frontend_cmd|composer_mode|run_migrate|
 ## 🚀 Como usar
 
 ```bash
-chmod +x deploy.sh
-./deploy.sh
+chmod +x atomicDeploy.sh
+./atomicDeploy.sh
 ```
 
 ---
@@ -133,11 +142,13 @@ O script força o Composer a rodar com o PHP correto:
 
 ## 🔐 Segurança
 
-* `set -euo pipefail`
+* `set -Eeuo pipefail`
 * lock com `flock`
 * validação de comandos
 * validação de binário PHP
 * validação de branch
+* validação estrita de configuração por projeto
+* `APP_KEY` não é gerada automaticamente por padrão (fail fast)
 * rollback automático
 
 ---

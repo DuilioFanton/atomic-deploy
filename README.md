@@ -120,14 +120,15 @@ This avoids hidden platform mismatches and dependency drift between projects.
 2. Validate environment and tools
 3. Clone repository into a timestamped release
 4. Link shared files and directories (`.env`, `storage`, `bootstrap/cache`)
-5. Install frontend dependencies/build (when applicable)
-6. Install Composer dependencies with the selected PHP binary
-7. Ensure app key and SQLite file (when needed)
-8. Run migrations (optional)
-9. Clear and warm Laravel caches
-10. Run health check command
-11. Switch `current` symlink atomically
-12. Restart queues and cleanup old releases
+5. Pre-install Composer vendor packages for frontend builds (when needed)
+6. Install frontend dependencies/build (when applicable)
+7. Install Composer dependencies with the selected PHP binary
+8. Ensure app key and SQLite file (when needed)
+9. Run migrations (optional)
+10. Clear and warm Laravel caches
+11. Run health check command
+12. Switch `current` symlink atomically
+13. Restart queues and cleanup old releases
 
 ---
 

@@ -343,6 +343,41 @@ run_composer_install() {
     fi
 }
 
+prepare_composer_vendor_for_frontend() {
+    local php_bin="$1"
+    local composer_mode="$2"
+    local release_dir="$3"
+    local frontend_cmd="$4"
+    local composer_bin
+
+    [ "$frontend_cmd" != "none" ] || return 0
+    [ -f "$release_dir/package.json" ] || return 0
+    [ -f "$release_dir/composer.json" ] || return 0
+
+    composer_bin="$(command -v composer)" || fail_with_error "Composer not found"
+
+    log_message "Preparing Composer vendor directory for frontend build"
+
+    if [ "$composer_mode" = "prod" ]; then
+        run_as_deploy_user "$php_bin" "$composer_bin" install \
+            --working-dir="$release_dir" \
+            --no-dev \
+            --prefer-dist \
+            --no-autoloader \
+            --no-scripts \
+            --no-interaction \
+            --no-progress
+    else
+        run_as_deploy_user "$php_bin" "$composer_bin" install \
+            --working-dir="$release_dir" \
+            --prefer-dist \
+            --no-autoloader \
+            --no-scripts \
+            --no-interaction \
+            --no-progress
+    fi
+}
+
 run_release_health_check() {
     local php_bin="$1"
     local release_dir="$2"
@@ -550,6 +585,8 @@ deploy_project() {
     run_as_root chown "$APP_USER:$WEB_GROUP" "$shared_dir/.env"
     run_as_root chmod -R 775 "$shared_dir/storage" "$shared_dir/bootstrap/cache"
     run_as_root chmod 640 "$shared_dir/.env"
+
+    prepare_composer_vendor_for_frontend "$php_bin" "$composer_mode" "$release_dir" "$frontend_cmd"
 
     log_message "Installing/building frontend when applicable"
     install_node_dependencies_and_build "$release_dir" "$frontend_cmd"
